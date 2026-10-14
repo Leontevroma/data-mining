@@ -3,6 +3,7 @@ import json
 import csv
 import random
 import shutil
+import time
 from datetime import datetime, timedelta
 
 # --- КОНФИГУРАЦИЯ СИСТЕМЫ (Пункт 5 методички: Конфигурируемость) ---
@@ -24,14 +25,18 @@ NORMAL_TEXTS = ["Сбоев не обнаружено", "Система рабо
 ANOMALY_TEXTS = ["Резкое торможение зафиксировано!", "Превышение скоростного режима!", "Повышенная нагрузка на двигатель!"]
 
 def write_to_manager_log(level, message):
-    """Компонент: Журнал загрузок (Пункт 4)"""
+    """
+    ОГРАНИЧЕНИЕ 4: Журнал загрузок
+    Фиксирует параметры и статус каждого шага пайплайна.
+    """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with open(CONFIG["MANAGER_LOG"], "a", encoding="utf-8") as f:
         f.write(f"[{timestamp}] [{level}] {message}\n")
 
 def get_last_timestamps():
-    """Компонент: Обеспечение инкрементальности (Пункт 1)
-    Проверяет ОБА файла и возвращает минимальный timestamp для синхронизации.
+    """
+    ОГРАНИЧЕНИЕ 1: Обеспечение точечной инкрементальности
+    Возвращает временные метки для КАЖДОГО файла отдельно.
     """
     default_dt = datetime.strptime(CONFIG["DEFAULT_START_TIME"], "%Y-%m-%d %H:%M:%S")
     json_dt = default_dt
@@ -50,55 +55,61 @@ def get_last_timestamps():
     # 2. Проверка CSV
     if os.path.exists(CONFIG["LOGS_FILE"]) and os.stat(CONFIG["LOGS_FILE"]).st_size > 0:
         try:
-            with open(CONFIG["LOGS_FILE"], "r", encoding="utf-8") as f:
+            with open(CONFIG["LOGS_FILE"], "r", encoding="utf-8") as f: # ИСПРАВЛЕНО: добавлена кодировка utf-8
                 reader = list(csv.reader(f))
                 if len(reader) > 1:  # Пропускаем хедер
                     csv_dt = datetime.strptime(reader[-1][0], "%Y-%m-%d %H:%M:%S")
         except Exception as e:
             write_to_manager_log("ERROR", f"Ошибка чтения CSV инкремента: {e}")
 
-    # Инкремент берется по минимальному, чтобы не потерять данные ни в одном из файлов
-    return min(json_dt, csv_dt)
+    return json_dt, csv_dt
 
 def save_json_safely(file_path, new_data, start_str, end_str):
-    """Безопасная (атомарная) запись JSON с дедупликацией (Идемпотентность и Отказоустойчивость)"""
+    """
+    ОГРАНИЧЕНИЕ 2 и 3: Идемпотентность и Отказоустойчивость (Атомарность через .tmp)
+    """
+    if not new_data: 
+        return
     tmp_file = file_path + ".tmp"
     existing_data = []
-    
+
     try:
         if os.path.exists(file_path) and os.stat(file_path).st_size > 0:
             with open(file_path, "r", encoding="utf-8") as f:
                 existing_data = json.load(f)
-        
-        # Идемпотентность: удаляем старые записи за этот период, если они были
+
+        # Идемпотентность: очистка старых дубликатов за текущий период
         existing_data = [row for row in existing_data if not (start_str <= row["timestamp"] <= end_str)]
         existing_data.extend(new_data)
-        
-        # Атомарная запись через временный файл
+
         with open(tmp_file, "w", encoding="utf-8") as f:
             json.dump(existing_data, f, ensure_ascii=False, indent=4)
         shutil.move(tmp_file, file_path)
     except Exception as e:
         write_to_manager_log("CRITICAL", f"Сбой записи JSON. Файл сохранен в исходном виде. Ошибка: {e}")
-        if os.path.exists(tmp_file): os.remove(tmp_file)
+        if os.path.exists(tmp_file): 
+            os.remove(tmp_file)
         raise e
 
 def save_csv_safely(file_path, new_data, start_str, end_str):
-    """Безопасная (атомарная) запись CSV с дедупликацией (Идемпотентность и Отказоустойчивость)"""
+    """
+    ОГРАНИЧЕНИЕ 2 и 3: Идемпотентность и Отказоустойчивость для CSV логов
+    """
+    if not new_data: 
+        return
     tmp_file = file_path + ".tmp"
     existing_data = []
-    
+
     try:
         if os.path.exists(file_path) and os.stat(file_path).st_size > 0:
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(file_path, "r", encoding="utf-8") as f: # ИСПРАВЛЕНО: добавлена кодировка utf-8 для чтения кириллицы логов
                 reader = csv.reader(f)
                 header = next(reader, ["timestamp", "device_id", "telemetry_log"])
-                # Идемпотентность: фильтруем дубли за период
+                # Идемпотентность: фильтруем старые записи за этот же период
                 existing_data = [row for row in reader if not (start_str <= row[0] <= end_str)]
         else:
             header = ["timestamp", "device_id", "telemetry_log"]
-            
-        # Атомарная запись
+
         with open(tmp_file, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(header)
@@ -107,74 +118,90 @@ def save_csv_safely(file_path, new_data, start_str, end_str):
         shutil.move(tmp_file, file_path)
     except Exception as e:
         write_to_manager_log("CRITICAL", f"Сбой записи CSV. Файл сохранен в исходном виде. Ошибка: {e}")
-        if os.path.exists(tmp_file): os.remove(tmp_file)
+        if os.path.exists(tmp_file): 
+            os.remove(tmp_file)
         raise e
 
 def run_etl_pipeline(days_to_generate=1, start_time=None, end_time=None):
     """Основной процесс автоматизированного сбора данных"""
-    
-    # Определение временных границ пайплайна
+    json_last_dt, csv_last_dt = get_last_timestamps()
+
+    # Инкремент: стартуем с самой ранней точки, где не хватает данных хотя бы в одном источнике
     if start_time is None:
-        last_tracked_time = get_last_timestamps()
-        current_time = last_tracked_time + timedelta(minutes=CONFIG["STEP_MINUTES"])
+        current_time = min(json_last_dt, csv_last_dt) + timedelta(minutes=CONFIG["STEP_MINUTES"])
     else:
         current_time = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
-        
+
     if end_time is None:
         end_time = current_time + timedelta(days=days_to_generate)
     else:
         end_time = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S")
-
+        
     start_str = current_time.strftime("%Y-%m-%d %H:%M:%S")
     end_str = end_time.strftime("%Y-%m-%d %H:%M:%S")
-
-    # Строгая проверка актуальности (Идемпотентность)
-    if current_time > end_time:
-        write_to_manager_log("INFO", "Запуск отменен: Начальная дата больше конечной.")
-        return
-
-    write_to_manager_log("INFO", f"Старт пайплайна. Период обработки: с {start_str} по {end_str}")
     
+    if current_time > end_time:
+        write_to_manager_log("INFO", "Запуск отменен: Новых данных для генерации нет.")
+        return
+        
+    write_to_manager_log("INFO", f"Старт пайплайна. Период обработки: с {start_str} по {end_str}")
+
     new_coords = []
     new_logs = []
-    
-    while current_time <= end_time:
-        # Устойчивость к сбоям (Пункт 3): Симуляция нестабильности источника данных (сеть/таймаут/ограничение частоты)
-        if random.random() < 0.02:  # 2% шанс сбоя при чтении очередной итерации данных
-            write_to_manager_log("WARNING", f"Внешний источник временно недоступен (Таймаут/Rate limit) на шаге {current_time}. Повторная попытка...")
-            current_time += timedelta(minutes=CONFIG["STEP_MINUTES"])
-            continue
 
-        for t_id, state in TRUCK_STATES.items():
-            state["lat"] += random.uniform(-0.003, 0.003)
-            state["lon"] += random.uniform(-0.003, 0.003)
-            
-            is_anomaly = random.random() < 0.05
-            if is_anomaly:
-                log_text = random.choice(ANOMALY_TEXTS)
-                speed = random.randint(85, 110) if "Превышение" in log_text else random.randint(10, 40)
-            else:
-                log_text = random.choice(NORMAL_TEXTS)
-                speed = random.randint(50, 80)
-            
-            str_time = current_time.strftime("%Y-%m-%d %H:%M:%S")
-            
-            new_coords.append({
-                "timestamp": str_time,
-                "device_id": state["dev"],
-                "truck_id": t_id,
-                "location": {"lat": round(state["lat"], 4), "lon": round(state["lon"], 4)},
-                "speed_kmh": speed
-            })
-            new_logs.append([str_time, state["dev"], log_text])
-            
-        current_time += timedelta(minutes=CONFIG["STEP_MINUTES"])
+    while current_time <= end_time:
+        # --- ОГРАНИЧЕНИЕ 3: Устойчивость к сбоям (Стратегия Retries) ---
+        MAX_RETRIES = 3
+        source_available = False
+
+        for attempt in range(1, MAX_RETRIES + 1):
+            if random.random() >= 0.02:  # 98% шанс успешного подключения
+                source_available = True
+                break
+            write_to_manager_log("WARNING", f"Попытка {attempt}/{MAX_RETRIES} неудачна: Источник недоступен на шаге {current_time}. Реконнект...")
+            time.sleep(0.1)
+
+        if not source_available:
+            write_to_manager_log("CRITICAL", f"Превышено число попыток доступа на шаге {current_time}. Пайплайн остановлен во избежание потери данных.")
+            break  # Экстренная остановка, сохраняем то, что успели собрать
+
+        # --- Выборочная инкрементальная запись данных ---
+        need_json = current_time > json_last_dt
+        need_csv = current_time > csv_last_dt
         
-    # --- БЕЗОПАСНОЕ СОХРАНЕНИЕ ДАННЫХ (Отказоустойчивость и Идемпотентность) ---
+        if need_json or need_csv:
+            for t_id, state in TRUCK_STATES.items():
+                state["lat"] += random.uniform(-0.003, 0.003)
+                state["lon"] += random.uniform(-0.003, 0.003)
+
+                is_anomaly = random.random() < 0.05
+                if is_anomaly:
+                    log_text = random.choice(ANOMALY_TEXTS)
+                    speed = random.randint(85, 110) if "Превышение" in log_text else random.randint(10, 40)
+                else:
+                    log_text = random.choice(NORMAL_TEXTS)
+                    speed = random.randint(50, 80)
+
+                str_time = current_time.strftime("%Y-%m-%d %H:%M:%S")
+
+                if need_json:
+                    new_coords.append({
+                        "timestamp": str_time,
+                        "device_id": state["dev"],
+                        "truck_id": t_id,
+                        "location": {"lat": round(state["lat"], 4), "lon": round(state["lon"], 4)},
+                        "speed_kmh": speed
+                    })
+                if need_csv:
+                    new_logs.append([str_time, state["dev"], log_text])
+
+        current_time += timedelta(minutes=CONFIG["STEP_MINUTES"])
+
+    # --- БЕЗОПАСНОЕ СОХРАНЕНИЕ ДАННЫХ ---
     try:
         save_json_safely(CONFIG["COORDS_FILE"], new_coords, start_str, end_str)
         save_csv_safely(CONFIG["LOGS_FILE"], new_logs, start_str, end_str)
-        
+
         status_msg = f"Успешно обработан период {start_str} - {end_str}. Записано строк JSON: {len(new_coords)}, CSV: {len(new_logs)}."
         write_to_manager_log("SUCCESS", status_msg)
         print(status_msg)
@@ -182,5 +209,6 @@ def run_etl_pipeline(days_to_generate=1, start_time=None, end_time=None):
         print(f"Критическая ошибка пайплайна: {final_error}. См. менеджер логов.")
 
 if __name__ == "__main__":
-    # 1. Обычный инкрементальный запуск (пойдет вперед от последней записи)
-run_etl_pipeline()
+    # Запуск симулятора на 1 день вперед от последней точки данных
+    run_etl_pipeline(days_to_generate=1)
+
