@@ -1,0 +1,9 @@
+{
+    "coords_file": "telemetry_coords.json",
+    "logs_file": "telemetry_logs.csv",
+    "manager_log": "data_load_manager.log",
+    "step_minutes": 10,
+    "default_start_time": "2026-01-01 08:00:00",
+    "fail_chance": 0.02,
+    "max_retries": 3
+}
