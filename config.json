@@ -5,5 +5,13 @@
     "step_minutes": 10,
     "default_start_time": "2026-01-01 08:00:00",
     "fail_chance": 0.02,
-    "max_retries": 3
+    "max_retries": 3,
+
+    "trucks": ["TRUCK_001", "TRUCK_002", "TRUCK_003"],
+    "max_speed_kmh": 150,
+    "valid_days": 30,
+    "random_seed": 42,
+    "features_file": "features.csv",
+    "selected_features_file": "selected_features.json"
 }
+
