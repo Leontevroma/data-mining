@@ -19,6 +19,7 @@
 вызывать и при обучении, и при построении прогноза (единый код).
 """
 import json
+import os
 
 import numpy as np
 import pandas as pd
@@ -28,6 +29,9 @@ from sklearn.metrics import mean_absolute_error
 # ---------------------------------------------------------------
 # Настройки
 # ---------------------------------------------------------------
+# Работаем в папке, где лежит сам файл, чтобы config.json находился при любом запуске
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
 with open("config.json", "r", encoding="utf-8") as f:
     CONFIG = json.load(f)
 
@@ -121,6 +125,8 @@ def make_daily(sensors, logs):
     # чтобы неполный день не выглядел как "мало проехал"
     records_per_day = 24 * 60 // CONFIG["step_minutes"]
     daily = daily[daily["n_records"] == records_per_day].drop(columns="n_records")
+    if daily.empty:
+        raise SystemExit("Нет ни одного полного дня данных. Запустите: python Sbor-generatcia.py 180")
 
     # Журналы -> какие события случились за сутки (извлечение признаков из текста)
     device_to_truck = sensors[["device_id", "truck_id"]].drop_duplicates()
@@ -168,7 +174,7 @@ def add_features(daily):
         df[f"{col}_lag7"] = g[col].shift(7)                                   # неделю назад
 
     # Календарные признаки (дата известна заранее, утечки нет)
-    df["day_of_week"] = df["date"].dt.dayofweek
+    df["day_of_week"] = df["date"].dt.day_of_week
     df["is_weekend"] = (df["day_of_week"] >= 5).astype(int)
     df["month"] = df["date"].dt.month
 
