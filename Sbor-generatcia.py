@@ -5,8 +5,8 @@
 Источник 2: telemetry_logs.csv    - текстовые журналы событий (слабоструктурированные)
 
 Запуск:
-    python etl.py        # догрузить 1 день новых данных
-    python etl.py 180    # догрузить 180 дней (первичная загрузка истории)
+    python Sbor-generatcia.py        # догрузить 1 день новых данных
+    python Sbor-generatcia.py 180    # догрузить 180 дней (первичная загрузка истории)
 """
 import csv
 import json
@@ -28,6 +28,8 @@ def load_config(path="config.json"):
         return json.load(f)
 
 
+# Работаем в папке, где лежит сам файл, чтобы config.json находился при любом запуске
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = load_config()
 
 # Три грузовика: начальные координаты и "фаза" маршрута
@@ -45,6 +47,7 @@ NORMAL_TEXTS = [
     "Остановка на разгрузку",
     "Плановая проверка пройдена",
 ]
+PARKED_TEXT = "Стоянка, двигатель выключен"
 ANOMALY_TEXTS = [
     "Резкое торможение зафиксировано!",
     "Превышение скоростного режима!",
@@ -67,6 +70,24 @@ def write_log(level, message):
 # ---------------------------------------------------------------
 # 3. Генерация данных (одинаковый результат при повторе)
 # ---------------------------------------------------------------
+def is_working(truck_id, current_time):
+    """
+    Работает ли грузовик в этот момент.
+    Будни: длинный рабочий день (примерно с 5-7 утра до 20-22 вечера).
+    Выходные (сб, вс): короткий день (примерно с 8-10 до 14-16).
+    Границы смены слегка меняются от дня ко дню, но для одного грузовика и дня
+    всегда одинаковы (зерно зависит от грузовика и даты).
+    """
+    day_rng = random.Random(f"{truck_id}-{current_time.date()}")
+    if current_time.weekday() >= 5:
+        start = 8 + day_rng.randint(0, 2)
+        end = 14 + day_rng.randint(0, 2)
+    else:
+        start = 5 + day_rng.randint(0, 2)
+        end = 20 + day_rng.randint(0, 2)
+    return start <= current_time.hour < end
+
+
 def make_records(truck_id, current_time):
     """
     Создаёт запись для одного грузовика на один момент времени.
@@ -85,7 +106,11 @@ def make_records(truck_id, current_time):
     lon = truck["lon"] + 0.02 * math.cos(step_no / 30 + truck["phase"])
 
     # Обычный режим или аномалия (5%)
-    if rng.random() < 0.05:
+    if not is_working(truck_id, current_time):
+        log_text = PARKED_TEXT                 # стоянка: не едет, топливо не тратит
+        speed = 0
+        fuel_per_100km = 0
+    elif rng.random() < 0.05:
         log_text = rng.choice(ANOMALY_TEXTS)
         if "Превышение" in log_text:
             speed = rng.randint(85, 110)
@@ -267,4 +292,3 @@ def run_etl(days=1):
 if __name__ == "__main__":
     days_to_load = int(sys.argv[1]) if len(sys.argv) > 1 else 1
     run_etl(days_to_load)
-
