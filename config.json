@@ -12,6 +12,8 @@
     "valid_days": 30,
     "random_seed": 42,
     "features_file": "features.csv",
-    "selected_features_file": "selected_features.json"
+    "selected_features_file": "selected_features.json",
+    "results_file": "model_results.csv",
+    "predictions_file": "predictions.csv",
+    "importance_file": "importance.csv"
 }
-
